@@ -4,7 +4,7 @@ Main application entry point for NBIM dividend reconciliation system.
 import os
 import sys
 from data_ingestion import DataIngestion
-from llm_agent import DividendReconciliationAgent
+from dividend_reconciliation_orchestrator import DividendReconciliationOrchestrator
 from reporting import ReportGenerator
 
 
@@ -28,10 +28,10 @@ def main():
         print(f"✅ Loaded {len(nbim_data)} NBIM records")
         print(f"✅ Loaded {len(custody_data)} custody records")
         
-        # Step 2: Analyze breaks using LLM
-        print("\n🤖 Analyzing potential breaks with AI...")
-        agent = DividendReconciliationAgent()
-        breaks = agent.analyze_all_breaks(nbim_data, custody_data)
+        # Step 2: Analyze breaks using three-agent architecture
+        print("\n🤖 Analyzing potential breaks with AI agents...")
+        orchestrator = DividendReconciliationOrchestrator()
+        breaks = orchestrator.get_legacy_format_results(nbim_data, custody_data)
         
         print(f"✅ Analysis complete - found {len(breaks)} potential breaks")
         

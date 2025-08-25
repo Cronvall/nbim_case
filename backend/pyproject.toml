@@ -7,6 +7,8 @@ dependencies = [
     "pandas>=2.1.4",
     "anthropic>=0.7.8",
     "python-dotenv>=1.0.0",
+    "fastapi>=0.104.1",
+    "uvicorn>=0.24.0",
 ]
 
 [build-system]

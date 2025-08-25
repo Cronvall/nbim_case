@@ -1,0 +1,20 @@
+{
+  "break_detection": {
+    "missing_record": {
+      "template": "Detect and classify this missing dividend record:\n\nMissing from: {missing_source}\nRecord details: {record_details}\n\nDetermine:\n1. Break type (missing_record)\n2. Break severity based on amount materiality\n3. Key identifying information\n\nIMPORTANT: Respond ONLY with valid JSON.\n{{\n    \"break_type\": \"missing_record\",\n    \"severity\": \"high|medium|low\",\n    \"amount_impact\": 0.0,\n    \"currency\": \"USD\",\n    \"isin\": \"identifier\",\n    \"company_name\": \"name\",\n    \"missing_from\": \"{missing_source}\",\n    \"detection_summary\": \"brief description\"\n}}",
+      "description": "Detects missing dividend records between NBIM and custody data"
+    },
+    "potential_mismatch": {
+      "template": "Detect and classify potential breaks in this dividend record pair:\n\nNBIM Record: {nbim_record}\nCustody Record: {custody_record}\n\nKey Differences:\n- Net Amount Difference: {amount_diff}\n- Tax Amount Difference: {tax_diff}\n- Ex Date Match: {ex_date_match}\n- Payment Date Match: {payment_date_match}\n\nDetermine break type and severity based on materiality thresholds:\n- Amount differences > 1000: high severity\n- Amount differences 100-1000: medium severity\n- Amount differences < 100: low severity\n\nIMPORTANT: Respond ONLY with valid JSON.\n{{\n    \"break_type\": \"amount_mismatch|date_mismatch|tax_discrepancy|no_break\",\n    \"severity\": \"high|medium|low\",\n    \"amount_impact\": {amount_diff},\n    \"currency\": \"currency_code\",\n    \"isin\": \"identifier\",\n    \"company_name\": \"name\",\n    \"detection_summary\": \"brief description of the break detected\"\n}}",
+      "description": "Detects breaks between matching NBIM and custody records"
+    }
+  },
+  "root_cause_analysis": {
+    "template": "Analyze the root causes for this detected dividend break:\n\nBreak Details: {break_details}\nNBIM Record: {nbim_record}\nCustody Record: {custody_record}\n\nProvide detailed root cause analysis focusing on:\n1. Data source issues\n2. System calculation differences\n3. Timing/processing differences\n4. Business rule variations\n\nIMPORTANT: Respond ONLY with valid JSON.\n{{\n    \"primary_root_cause\": \"main cause category\",\n    \"root_causes\": [\"detailed cause 1\", \"detailed cause 2\"],\n    \"data_quality_issues\": [\"issue1\", \"issue2\"],\n    \"system_discrepancies\": [\"discrepancy1\", \"discrepancy2\"],\n    \"business_rule_conflicts\": [\"conflict1\", \"conflict2\"],\n    \"recommended_investigation\": [\"action1\", \"action2\"],\n    \"analysis_confidence\": \"high|medium|low\",\n    \"detailed_explanation\": \"comprehensive explanation of root causes\"\n}}",
+    "description": "Analyzes root causes behind detected dividend breaks"
+  },
+  "priority_classification": {
+    "template": "Classify the business priority and impact of this dividend break:\n\nBreak Details: {break_details}\nRoot Cause Analysis: {root_cause_analysis}\nAmount Impact: {amount_impact}\nCurrency: {currency}\n\nConsider:\n1. Financial materiality (amount, currency impact)\n2. Regulatory/compliance risk\n3. Operational urgency\n4. Systemic risk (pattern detection)\n5. Client/stakeholder impact\n\nIMPORTANT: Respond ONLY with valid JSON.\n{{\n    \"priority_score\": 8,\n    \"priority_level\": \"critical|high|medium|low\",\n    \"financial_impact\": \"high|medium|low\",\n    \"regulatory_risk\": \"high|medium|low\",\n    \"operational_urgency\": \"immediate|urgent|routine\",\n    \"systemic_risk\": \"high|medium|low\",\n    \"recommended_actions\": [\"action1\", \"action2\"],\n    \"escalation_required\": true,\n    \"target_resolution_days\": 3,\n    \"business_justification\": \"detailed reasoning for priority classification\"\n}}",
+    "description": "Classifies business priority and impact of dividend breaks"
+  }
+}

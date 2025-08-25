@@ -1,0 +1,6 @@
+.env*
+__pycache__
+.venv
+reports
+data
+prompts.json

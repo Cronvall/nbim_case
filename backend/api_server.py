@@ -11,7 +11,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from data_ingestion import DataIngestion
-from dividend_reconciliation_orchestrator import DividendReconciliationOrchestrator
+from consolidated_row_analysis_agent import ConsolidatedRowAnalysisAgent
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,53 +32,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pydantic models matching frontend interfaces
-class RecordData(BaseModel):
-    isin: Optional[str] = None
-    ticker: Optional[str] = None
-    currency: Optional[str] = None
-    custodian: Optional[str] = None
-    company_name: Optional[str] = None
+# Pydantic models for consolidated row analysis
+class RowAnalysis(BaseModel):
+    row_id: str
+    company_name: str
+    event_key: str
+    reconciliation_score: int
+    overall_status: str
     ex_date: Optional[str] = None
     payment_date: Optional[str] = None
+    financial_impact: Dict[str, Any]
+    identified_issues: List[Dict[str, Any]]
+    data_quality_assessment: Dict[str, Any]
+    recommended_actions: List[Dict[str, Any]]
+    investigation_findings: Dict[str, Any]
+    regulatory_compliance: Dict[str, Any]
+    detailed_explanation: str
+    raw_fields: Optional[Dict[str, Any]] = None
 
-class MatchData(BaseModel):
-    type: str
-    nbim_record: Optional[RecordData] = None
-    custody_record: Optional[RecordData] = None
+class PortfolioSummary(BaseModel):
+    total_rows: int
+    total_financial_impact_usd: float
+    average_reconciliation_score: float
+    status_distribution: Dict[str, int]
+    severity_distribution: Dict[str, int]
+    high_impact_rows_count: int
+    portfolio_health: str
+    key_portfolio_recommendations: List[str]
+    top_issues_by_impact: List[Dict[str, Any]]
 
-class Break(BaseModel):
-    id: str
-    type: str
-    description: str
-    priority: str  # 'high' | 'medium' | 'low'
-    match_data: Optional[MatchData] = None
-    suggested_actions: List[str]
+class ConsolidatedAnalysisResult(BaseModel):
+    analysis_type: str
+    total_rows_analyzed: int
+    analysis_timestamp: str
+    row_analyses: List[RowAnalysis]
+    portfolio_summary: PortfolioSummary
 
-class Summary(BaseModel):
-    total_breaks: int
-    high_priority: int
-    medium_priority: int
-    low_priority: int
-
-class AnalysisResult(BaseModel):
-    breaks: List[Break]
-    summary: Summary
-
-# Global data loader and orchestrator instances
+# Global data loader and analysis agent instances
 data_loader = None
-orchestrator = None
+analysis_agent = None
 
 def initialize_components():
-    """Initialize data loader and orchestrator."""
-    global data_loader, orchestrator
+    """Initialize data loader and analysis agent."""
+    global data_loader, analysis_agent
     
     # Check for Anthropic API key
     if not os.getenv('ANTHROPIC_API_KEY'):
         raise RuntimeError("ANTHROPIC_API_KEY environment variable not set")
     
     data_loader = DataIngestion()
-    orchestrator = DividendReconciliationOrchestrator()
+    analysis_agent = ConsolidatedRowAnalysisAgent()
     logger.info("Components initialized successfully")
 
 @app.on_event("startup")
@@ -101,109 +104,44 @@ async def health_check():
     return {
         "status": "healthy",
         "api_key_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
-        "components_initialized": data_loader is not None and orchestrator is not None
+        "components_initialized": data_loader is not None and analysis_agent is not None
     }
 
-@app.post("/api/analyze", response_model=AnalysisResult)
+@app.post("/api/analyze", response_model=ConsolidatedAnalysisResult)
 async def analyze_dividends():
     """
-    Analyze dividend bookings for discrepancies and breaks.
-    Returns analysis results in the format expected by the frontend.
+    Analyze dividend bookings using consolidated row-based analysis.
+    Returns comprehensive analysis with one result per data row.
     """
     try:
-        if not data_loader or not orchestrator:
+        if not data_loader or not analysis_agent:
             raise HTTPException(status_code=500, detail="Components not initialized")
         
-        logger.info("Starting dividend analysis...")
+        logger.info("Starting consolidated dividend analysis...")
         
         # Load data
         logger.info("Loading dividend data...")
         nbim_data, custody_data = data_loader.load_all_data()
         logger.info(f"Loaded {len(nbim_data)} NBIM records and {len(custody_data)} custody records")
         
-        # Analyze breaks using orchestrator
-        logger.info("Analyzing breaks with AI agents...")
-        breaks = orchestrator.get_legacy_format_results(nbim_data, custody_data)
-        logger.info(f"Analysis complete - found {len(breaks)} potential breaks")
+        # Perform consolidated row analysis
+        logger.info("Performing consolidated row analysis...")
+        analysis_result = analysis_agent.analyze_all_rows(nbim_data, custody_data)
+        logger.info(f"Analysis complete - analyzed {analysis_result['total_rows_analyzed']} rows")
         
-        # Convert to frontend format
-        formatted_breaks = []
-        severity_counts = {'high': 0, 'medium': 0, 'low': 0}
+        # Convert to Pydantic models for validation
+        row_analyses = [RowAnalysis(**row) for row in analysis_result['row_analyses']]
+        portfolio_summary = PortfolioSummary(**analysis_result['portfolio_summary'])
         
-        for i, break_item in enumerate(breaks):
-            # Map break type to user-friendly description
-            break_type = break_item.get('break_type', 'unknown').replace('_', ' ').title()
-            
-            # Create description from explanation or root causes
-            description = break_item.get('explanation', '')
-            if not description and break_item.get('root_causes'):
-                description = '. '.join(break_item['root_causes'])
-            if not description:
-                description = f"Discrepancy detected in {break_type.lower()}"
-            
-            # Map severity to priority
-            severity = break_item.get('severity', 'medium').lower()
-            if severity not in ['high', 'medium', 'low']:
-                severity = 'medium'
-            
-            severity_counts[severity] += 1
-            
-            # Get suggested actions
-            actions = break_item.get('actions', [])
-            if not actions:
-                actions = ['Review and investigate discrepancy', 'Verify source data accuracy']
-            
-            # Get match data
-            match_data = None
-            if break_item.get('match_data'):
-                match_type = break_item['match_data'].get('type')
-                nbim_record = None
-                if break_item['match_data'].get('nbim_record'):
-                    nbim_data = break_item['match_data']['nbim_record']
-                    nbim_record = RecordData(
-                        isin=nbim_data.get('isin'),
-                        ticker=nbim_data.get('ticker'),
-                        currency=nbim_data.get('currency'),
-                        custodian=nbim_data.get('custodian'),
-                        company_name=nbim_data.get('company_name'),
-                        ex_date=str(nbim_data.get('ex_date')) if nbim_data.get('ex_date') is not None else None,
-                        payment_date=str(nbim_data.get('payment_date')) if nbim_data.get('payment_date') is not None else None
-                    )
-                custody_record = None
-                if break_item['match_data'].get('custody_record'):
-                    custody_data = break_item['match_data']['custody_record']
-                    custody_record = RecordData(
-                        isin=custody_data.get('isin'),
-                        ticker=custody_data.get('ticker'),
-                        currency=custody_data.get('currency'),
-                        custodian=custody_data.get('custodian'),
-                        company_name=custody_data.get('company_name'),
-                        ex_date=str(custody_data.get('ex_date')) if custody_data.get('ex_date') is not None else None,
-                        payment_date=str(custody_data.get('payment_date')) if custody_data.get('payment_date') is not None else None
-                    )
-                match_data = MatchData(type=match_type, nbim_record=nbim_record, custody_record=custody_record)
-            
-            formatted_break = Break(
-                id=f"break_{i+1}",
-                type=break_type,
-                description=description,
-                priority=severity,
-                match_data=match_data,
-                suggested_actions=actions
-            )
-            formatted_breaks.append(formatted_break)
-        
-        # Create summary
-        summary = Summary(
-            total_breaks=len(formatted_breaks),
-            high_priority=severity_counts['high'],
-            medium_priority=severity_counts['medium'],
-            low_priority=severity_counts['low']
+        result = ConsolidatedAnalysisResult(
+            analysis_type=analysis_result['analysis_type'],
+            total_rows_analyzed=analysis_result['total_rows_analyzed'],
+            analysis_timestamp=analysis_result['analysis_timestamp'],
+            row_analyses=row_analyses,
+            portfolio_summary=portfolio_summary
         )
         
-        result = AnalysisResult(breaks=formatted_breaks, summary=summary)
-        logger.info("Analysis results formatted successfully")
-        
+        logger.info("Consolidated analysis results formatted successfully")
         return result
         
     except FileNotFoundError as e:

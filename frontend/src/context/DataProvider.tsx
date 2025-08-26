@@ -10,6 +10,9 @@ interface DataContextType {
   handleAnalyze: (forceRefresh?: boolean) => Promise<void>
   handleResolve: () => Promise<void>
   downloadLinks: { nbim: string; custody: string } | null
+  reviewStatus: 'idle' | 'approved' | 'needs_revision'
+  reviewVotes: Array<{ reviewer: string; approved: boolean; feedback: string }>
+  reviewFeedback: string[]
   toggleActionCompleted: (rowId: string, actionId: string) => void
   removeAction: (rowId: string, actionId: string) => void
 }
@@ -89,6 +92,9 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
   const [error, setError] = useState<string>('')
   const [isUsingCache, setIsUsingCache] = useState<boolean>(false)
   const [downloadLinks, setDownloadLinks] = useState<{ nbim: string; custody: string } | null>(null)
+  const [reviewStatus, setReviewStatus] = useState<'idle' | 'approved' | 'needs_revision'>('idle')
+  const [reviewVotes, setReviewVotes] = useState<Array<{ reviewer: string; approved: boolean; feedback: string }>>([])
+  const [reviewFeedback, setReviewFeedback] = useState<string[]>([])
 
   // Load cached data on component mount
   useEffect(() => {
@@ -231,18 +237,34 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
-      if (!resp.ok) {
-        if (resp.status === 404) throw new Error('No report found. Run Analyze first.')
-        throw new Error(`Resolve failed with status ${resp.status}`)
+      const data = await resp.json().catch(() => null)
+      if (resp.ok && data?.status === 'approved') {
+        const base = 'http://localhost:8000'
+        const links = {
+          nbim: base + (data?.downloads?.nbim || '/api/download-fixed/nbim'),
+          custody: base + (data?.downloads?.custody || '/api/download-fixed/custody'),
+        }
+        setDownloadLinks(links)
+        setReviewStatus('approved')
+        setReviewVotes(data?.votes || [])
+        setReviewFeedback([])
+        setLoadingState('success')
+        return
       }
-      const data = await resp.json()
-      const base = 'http://localhost:8000'
-      const links = {
-        nbim: base + (data?.downloads?.nbim || '/api/download-fixed/nbim'),
-        custody: base + (data?.downloads?.custody || '/api/download-fixed/custody'),
+      // 409 needs revision
+      if (resp.status === 409 && data) {
+        setDownloadLinks(null)
+        setReviewStatus('needs_revision')
+        setReviewVotes(data?.votes || [])
+        setReviewFeedback(data?.feedback || [])
+        setError('Resolution needs revision. See reviewer feedback below.')
+        setLoadingState('error')
+        return
       }
-      setDownloadLinks(links)
-      setLoadingState('success')
+      if (resp.status === 404) {
+        throw new Error('No report found. Run Analyze first.')
+      }
+      throw new Error(`Resolve failed with status ${resp.status}`)
     } catch (err) {
       console.error('Resolve failed:', err)
       setError(err instanceof Error ? err.message : 'An unexpected error occurred')
@@ -258,6 +280,9 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
     handleAnalyze,
     handleResolve,
     downloadLinks,
+    reviewStatus,
+    reviewVotes,
+    reviewFeedback,
     toggleActionCompleted,
     removeAction,
   }

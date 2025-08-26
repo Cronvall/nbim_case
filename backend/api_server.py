@@ -17,7 +17,7 @@ import pandas as pd
 
 from data_ingestion import DataIngestion
 from consolidated_row_analysis_agent import ConsolidatedRowAnalysisAgent
-from team_resolution_agent import TeamResolutionOrchestrator
+from team_resolution_agent import TeamResolutionOrchestrator, MajorityReviewBoard
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +28,9 @@ app = FastAPI(
     description="API for analyzing dividend booking discrepancies using AI agents",
     version="1.0.0"
 )
+
+# Simple in-memory counter for how many times reviewers required revisions
+revision_rejections = 0
 
 # Add CORS middleware for frontend integration
 app.add_middleware(
@@ -110,7 +113,8 @@ async def health_check():
     return {
         "status": "healthy",
         "api_key_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
-        "components_initialized": data_loader is not None and analysis_agent is not None
+        "components_initialized": data_loader is not None and analysis_agent is not None,
+        "revision_rejections": revision_rejections,
     }
 
 @app.post("/api/analyze", response_model=ConsolidatedAnalysisResult)
@@ -234,19 +238,57 @@ def _build_fixed_dataframes(report_data: Dict[str, Any]) -> Dict[str, pd.DataFra
                         pass
         return {'nbim': nbim_df, 'custody': custody_df}
 
+
+def _run_resolution_with_review() -> Dict[str, Any]:
+    """Run team resolution and majority review. Returns dict with approval, votes, feedback, and dataframes."""
+    report = _load_latest_report()
+    loader = DataIngestion()
+    nbim_df_before, custody_df_before = loader.load_all_data()
+
+    team = TeamResolutionOrchestrator()
+    result = team.resolve(nbim_df_before, custody_df_before, report)
+    nbim_after = result['nbim']
+    custody_after = result['custody']
+    applied = result.get('applied_changes', [])
+
+    board = MajorityReviewBoard()
+    verdict = board.evaluate(nbim_df_before, custody_df_before, nbim_after, custody_after, applied)
+    return {
+        'approved': verdict['approved'],
+        'votes': verdict['votes'],
+        'feedback': verdict.get('feedback', []),
+        'nbim': nbim_after,
+        'custody': custody_after,
+    }
+
 @app.post("/api/resolve")
 async def resolve_breaks():
-    """Trigger quick-fix resolution based on the latest JSON report. Returns download links."""
+    """Run resolution and review. If approved, return download links; else return feedback for revision."""
+    global revision_rejections
     try:
-        _ = _load_latest_report()  # Validate report exists
-        return JSONResponse({
-            "status": "ok",
-            "message": "Resolution computed. Use the provided download endpoints.",
-            "downloads": {
-                "nbim": "/api/download-fixed/nbim",
-                "custody": "/api/download-fixed/custody"
-            }
-        })
+        outcome = _run_resolution_with_review()
+        if outcome['approved']:
+            logger.info("Resolution approved by majority reviewers.")
+            return JSONResponse({
+                "status": "approved",
+                "message": "Resolution approved by majority. Use the provided download endpoints.",
+                "votes": outcome['votes'],
+                "downloads": {
+                    "nbim": "/api/download-fixed/nbim",
+                    "custody": "/api/download-fixed/custody"
+                },
+                "revision_rejections": revision_rejections,
+            })
+        else:
+            revision_rejections += 1
+            logger.info(f"Resolution requires revision (majority rejected). Total revisions so far: {revision_rejections}")
+            return JSONResponse({
+                "status": "needs_revision",
+                "message": "Resolution rejected by reviewers. See feedback.",
+                "votes": outcome['votes'],
+                "feedback": outcome['feedback'],
+                "revision_rejections": revision_rejections,
+            }, status_code=409)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -259,9 +301,15 @@ async def download_fixed(which: str):
     if which not in {"nbim", "custody"}:
         raise HTTPException(status_code=400, detail="Invalid file selection")
     try:
-        report = _load_latest_report()
-        dfs = _build_fixed_dataframes(report)
-        df = dfs[which]
+        outcome = _run_resolution_with_review()
+        if not outcome['approved']:
+            return JSONResponse({
+                "status": "needs_revision",
+                "message": "Downloads blocked: resolution not approved by reviewers.",
+                "votes": outcome['votes'],
+                "feedback": outcome['feedback']
+            }, status_code=409)
+        df = outcome[which]
         buf = io.StringIO()
         df.to_csv(buf, index=False, sep=';')  # match input separator
         buf.seek(0)

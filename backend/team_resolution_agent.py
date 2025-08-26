@@ -129,9 +129,10 @@ class ManagerAgent:
     def apply_changes(self,
                       nbim_df: pd.DataFrame,
                       custody_df: pd.DataFrame,
-                      proposals: List[Change]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                      proposals: List[Change]) -> Tuple[pd.DataFrame, pd.DataFrame, List[Change]]:
         nbim_df_out = nbim_df.copy()
         custody_df_out = custody_df.copy()
+        applied: List[Change] = []
 
         for ch in proposals:
             try:
@@ -143,6 +144,7 @@ class ManagerAgent:
                         nbim_df_out = pd.concat([nbim_df_out, pd.DataFrame([new_row])], ignore_index=True)
                     else:
                         custody_df_out = pd.concat([custody_df_out, pd.DataFrame([new_row])], ignore_index=True)
+                    applied.append(ch)
                     continue
 
                 if ch.row_index is None or ch.row_index < 0:
@@ -153,11 +155,12 @@ class ManagerAgent:
                     nbim_df_out.at[ch.row_index, ch.field] = ch.new_value
                 else:
                     custody_df_out.at[ch.row_index, ch.field] = ch.new_value
+                applied.append(ch)
             except Exception:
                 # Skip problematic changes rather than failing the flow
                 continue
 
-        return nbim_df_out, custody_df_out
+        return nbim_df_out, custody_df_out, applied
 
 
 class TeamResolutionOrchestrator:
@@ -168,7 +171,7 @@ class TeamResolutionOrchestrator:
         self.math = MathematicianAgent()
         self.manager = ManagerAgent()
 
-    def resolve(self, nbim_df: pd.DataFrame, custody_df: pd.DataFrame, report_data: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+    def resolve(self, nbim_df: pd.DataFrame, custody_df: pd.DataFrame, report_data: Dict[str, Any]) -> Dict[str, Any]:
         # Build index by (isin, event_key)
         def make_index(df: pd.DataFrame):
             return {(str(r.get('isin')), str(r.get('event_key'))): i for i, r in enumerate(df.to_dict('records'))}
@@ -222,6 +225,123 @@ class TeamResolutionOrchestrator:
             proposals.extend(refined_props)
 
         # Manager applies approved changes
-        nbim_out, custody_out = self.manager.apply_changes(nbim_df, custody_df, proposals)
+        nbim_out, custody_out, applied = self.manager.apply_changes(nbim_df, custody_df, proposals)
 
-        return {'nbim': nbim_out, 'custody': custody_out}
+        return {
+            'nbim': nbim_out,
+            'custody': custody_out,
+            'applied_changes': [
+                {
+                    'target': ch.target,
+                    'row_index': ch.row_index,
+                    'field': ch.field,
+                    'new_value': ch.new_value,
+                    'reason': ch.reason,
+                    'confidence': ch.confidence,
+                } for ch in applied
+            ]
+        }
+
+
+class BaseReviewer:
+    """Base class for reviewers."""
+
+    name: str = "Reviewer"
+
+    def review(self,
+               nbim_before: pd.DataFrame,
+               custody_before: pd.DataFrame,
+               nbim_after: pd.DataFrame,
+               custody_after: pd.DataFrame,
+               applied_changes: List[Dict[str, Any]]) -> Tuple[bool, str]:
+        raise NotImplementedError
+
+
+class ConsistencyReviewer(BaseReviewer):
+    name = "ConsistencyReviewer"
+
+    def review(self, nbim_before, custody_before, nbim_after, custody_after, applied_changes):
+        # Check presence of key fields and non-null critical values after changes
+        required_cols = ['isin', 'event_key']
+        for df_name, df in [('nbim', nbim_after), ('custody', custody_after)]:
+            for col in required_cols:
+                if col not in df.columns:
+                    return False, f"{df_name} missing required column {col}"
+                if df[col].isna().any():
+                    return False, f"{df_name} contains nulls in {col} after changes"
+        return True, "Key fields present and non-null"
+
+
+class NumericReviewer(BaseReviewer):
+    name = "NumericReviewer"
+
+    def review(self, nbim_before, custody_before, nbim_after, custody_after, applied_changes):
+        import math as _math
+        # Validate net = gross - tax where available; tax_rate consistency
+        def check_df(df, which):
+            for i, r in df.iterrows():
+                try:
+                    gross = float(r['gross_amount']) if 'gross_amount' in r and pd.notna(r['gross_amount']) else None
+                    tax = float(r['tax_amount']) if 'tax_amount' in r and pd.notna(r['tax_amount']) else None
+                    net = float(r['net_amount']) if 'net_amount' in r and pd.notna(r['net_amount']) else None
+                    rate = float(r['tax_rate']) if 'tax_rate' in r and pd.notna(r['tax_rate']) else None
+                except Exception:
+                    continue
+                if gross is not None and tax is not None and net is not None:
+                    if not _math.isclose(net, round(gross - tax, 2), abs_tol=0.02):
+                        return False, f"{which} row {i}: net != gross - tax"
+                if gross is not None and tax is not None and rate is not None and gross != 0:
+                    if not _math.isclose(rate, round((tax / gross) * 100.0, 4), rel_tol=1e-3, abs_tol=1e-2):
+                        return False, f"{which} row {i}: tax_rate inconsistent"
+            return True, "Numeric relationships consistent"
+
+        ok, msg = check_df(nbim_after, 'nbim')
+        if not ok:
+            return ok, msg
+        return check_df(custody_after, 'custody')
+
+
+class PolicyReviewer(BaseReviewer):
+    name = "PolicyReviewer"
+
+    def review(self, nbim_before, custody_before, nbim_after, custody_after, applied_changes):
+        # Simple policy: only allow changes that align custody to NBIM or add missing rows; block changes to NBIM financials
+        for ch in applied_changes:
+            if ch.get('field') == '__ADD_ROW__':
+                continue
+            if ch.get('target') == 'nbim' and ch.get('field') in {'net_amount', 'gross_amount', 'tax_amount', 'tax_rate'}:
+                return False, "Policy blocks modifying NBIM financial fields"
+        return True, "Changes comply with policy"
+
+
+class MajorityReviewBoard:
+    """Runs three reviewers and requires majority approval."""
+
+    def __init__(self) -> None:
+        self.reviewers: List[BaseReviewer] = [
+            ConsistencyReviewer(),
+            NumericReviewer(),
+            PolicyReviewer(),
+        ]
+
+    def evaluate(self,
+                 nbim_before: pd.DataFrame,
+                 custody_before: pd.DataFrame,
+                 nbim_after: pd.DataFrame,
+                 custody_after: pd.DataFrame,
+                 applied_changes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        votes: List[Dict[str, Any]] = []
+        approvals = 0
+        feedback: List[str] = []
+        for rv in self.reviewers:
+            ok, msg = rv.review(nbim_before, custody_before, nbim_after, custody_after, applied_changes)
+            votes.append({"reviewer": rv.name, "approved": ok, "feedback": msg})
+            if ok:
+                approvals += 1
+            else:
+                feedback.append(f"{rv.name}: {msg}")
+        return {
+            "approved": approvals >= 2,
+            "votes": votes,
+            "feedback": feedback,
+        }

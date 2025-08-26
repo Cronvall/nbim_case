@@ -2,7 +2,7 @@ import React from 'react'
 import { useData } from '../context/DataProvider'
 
 const AnalyzeControls: React.FC = () => {
-  const { loadingState, analysisResult, isUsingCache, handleAnalyze, handleResolve, downloadLinks } = useData()
+  const { loadingState, analysisResult, isUsingCache, handleAnalyze, handleResolve, downloadLinks, reviewStatus, reviewVotes, reviewFeedback, error } = useData()
 
   return (
     <div className="analyze-section">
@@ -41,6 +41,31 @@ const AnalyzeControls: React.FC = () => {
           <a className="download-button" href={downloadLinks.custody} target="_blank" rel="noreferrer" download>
             ⬇️ Download Fixed Custody CSV
           </a>
+        </div>
+      )}
+      {reviewStatus === 'needs_revision' && (
+        <div className="review-feedback" style={{ marginTop: '12px' }}>
+          <div style={{ color: '#b00020', fontWeight: 600 }}>Reviewers rejected the resolution.</div>
+          {error && <div style={{ color: '#b00020' }}>{error}</div>}
+          {reviewVotes.length > 0 && (
+            <ul style={{ marginTop: 8 }}>
+              {reviewVotes.map((v, i) => (
+                <li key={i}>
+                  <strong>{v.reviewer}</strong>: {v.approved ? 'Approved ✅' : 'Rejected ❌'} – {v.feedback}
+                </li>
+              ))}
+            </ul>
+          )}
+          {reviewFeedback.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontWeight: 600 }}>Actionable feedback:</div>
+              <ul>
+                {reviewFeedback.map((f, i) => (
+                  <li key={i}>{f}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
       {isUsingCache && (

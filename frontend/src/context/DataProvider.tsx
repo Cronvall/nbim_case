@@ -8,6 +8,8 @@ interface DataContextType {
   error: string
   isUsingCache: boolean
   handleAnalyze: (forceRefresh?: boolean) => Promise<void>
+  handleResolve: () => Promise<void>
+  downloadLinks: { nbim: string; custody: string } | null
   toggleActionCompleted: (rowId: string, actionId: string) => void
   removeAction: (rowId: string, actionId: string) => void
 }
@@ -86,6 +88,7 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
   const [analysisResult, setAnalysisResult] = useState<ConsolidatedAnalysisResult | null>(null)
   const [error, setError] = useState<string>('')
   const [isUsingCache, setIsUsingCache] = useState<boolean>(false)
+  const [downloadLinks, setDownloadLinks] = useState<{ nbim: string; custody: string } | null>(null)
 
   // Load cached data on component mount
   useEffect(() => {
@@ -220,12 +223,41 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
     }
   }
 
+  const handleResolve = async () => {
+    setLoadingState('loading')
+    setError('')
+    try {
+      const resp = await fetch('http://localhost:8000/api/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (!resp.ok) {
+        if (resp.status === 404) throw new Error('No report found. Run Analyze first.')
+        throw new Error(`Resolve failed with status ${resp.status}`)
+      }
+      const data = await resp.json()
+      const base = 'http://localhost:8000'
+      const links = {
+        nbim: base + (data?.downloads?.nbim || '/api/download-fixed/nbim'),
+        custody: base + (data?.downloads?.custody || '/api/download-fixed/custody'),
+      }
+      setDownloadLinks(links)
+      setLoadingState('success')
+    } catch (err) {
+      console.error('Resolve failed:', err)
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred')
+      setLoadingState('error')
+    }
+  }
+
   const value: DataContextType = {
     loadingState,
     analysisResult,
     error,
     isUsingCache,
     handleAnalyze,
+    handleResolve,
+    downloadLinks,
     toggleActionCompleted,
     removeAction,
   }

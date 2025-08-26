@@ -191,6 +191,30 @@ def _load_latest_report() -> Dict[str, Any]:
     with open(report_path, 'r') as f:
         return json.load(f)
 
+def _find_latest_revision_dir() -> Optional[str]:
+    base_dir = os.path.dirname(__file__)
+    rev_root = os.path.join(base_dir, 'revisions')
+    if not os.path.isdir(rev_root):
+        return None
+    entries = [d for d in os.listdir(rev_root) if os.path.isdir(os.path.join(rev_root, d))]
+    if not entries:
+        return None
+    # Expect directories named as timestamps YYYYMMDD_HHMMSS
+    latest = sorted(entries)[-1]
+    return os.path.join(rev_root, latest)
+
+def _load_latest_revision_data() -> Dict[str, pd.DataFrame]:
+    rev_dir = _find_latest_revision_dir()
+    if not rev_dir:
+        raise FileNotFoundError("No revisions found. Run /api/resolve to create a revision first.")
+    nbim_path = os.path.join(rev_dir, 'NBIM_after.csv')
+    custody_path = os.path.join(rev_dir, 'CUSTODY_after.csv')
+    if not (os.path.exists(nbim_path) and os.path.exists(custody_path)):
+        raise FileNotFoundError("Latest revision is incomplete (missing NBIM_after.csv or CUSTODY_after.csv).")
+    nbim_df = pd.read_csv(nbim_path, sep=';')
+    custody_df = pd.read_csv(custody_path, sep=';')
+    return {'nbim': nbim_df, 'custody': custody_df, 'rev_dir': rev_dir}
+
 def _build_fixed_dataframes(report_data: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
     """
     Quick-fix resolver:
@@ -253,6 +277,34 @@ def _run_resolution_with_review() -> Dict[str, Any]:
 
     board = MajorityReviewBoard()
     verdict = board.evaluate(nbim_df_before, custody_df_before, nbim_after, custody_after, applied)
+
+    # Persist a full revision snapshot under backend/revisions/<timestamp>/
+    try:
+        base_dir = os.path.dirname(__file__)
+        rev_root = os.path.join(base_dir, 'revisions')
+        os.makedirs(rev_root, exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        rev_dir = os.path.join(rev_root, ts)
+        os.makedirs(rev_dir, exist_ok=True)
+
+        # Save before/after CSVs (using ';' separator to match inputs)
+        nbim_df_before.to_csv(os.path.join(rev_dir, 'NBIM_before.csv'), index=False, sep=';')
+        custody_df_before.to_csv(os.path.join(rev_dir, 'CUSTODY_before.csv'), index=False, sep=';')
+        nbim_after.to_csv(os.path.join(rev_dir, 'NBIM_after.csv'), index=False, sep=';')
+        custody_after.to_csv(os.path.join(rev_dir, 'CUSTODY_after.csv'), index=False, sep=';')
+
+        # Save applied changes and verdict
+        with open(os.path.join(rev_dir, 'applied_changes.json'), 'w') as f:
+            json.dump(applied, f, indent=2, default=str)
+        with open(os.path.join(rev_dir, 'verdict.json'), 'w') as f:
+            json.dump({
+                'approved': verdict.get('approved'),
+                'votes': verdict.get('votes', []),
+                'feedback': verdict.get('feedback', []),
+            }, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f"Failed to persist revision snapshot: {e}")
+
     return {
         'approved': verdict['approved'],
         'votes': verdict['votes'],
@@ -322,6 +374,46 @@ async def download_fixed(which: str):
     except Exception as e:
         logger.error(f"Download failed: {e}")
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+@app.post("/api/analyze-latest-revision", response_model=ConsolidatedAnalysisResult)
+async def analyze_latest_revision():
+    """Analyze the latest revised datasets saved under backend/revisions/<timestamp>."""
+    try:
+        if analysis_agent is None:
+            raise HTTPException(status_code=500, detail="Components not initialized")
+
+        payload = _load_latest_revision_data()
+        nbim_df = payload['nbim']
+        custody_df = payload['custody']
+
+        logger.info("Analyzing latest revision data...")
+        analysis_result = analysis_agent.analyze_all_rows(nbim_df, custody_df)
+
+        row_analyses = [RowAnalysis(**row) for row in analysis_result['row_analyses']]
+        portfolio_summary = PortfolioSummary(**analysis_result['portfolio_summary'])
+
+        result = ConsolidatedAnalysisResult(
+            analysis_type=analysis_result['analysis_type'],
+            total_rows_analyzed=analysis_result['total_rows_analyzed'],
+            analysis_timestamp=analysis_result['analysis_timestamp'],
+            row_analyses=row_analyses,
+            portfolio_summary=portfolio_summary
+        )
+
+        # Persist a JSON report alongside the revision directory
+        try:
+            report_path = os.path.join(payload['rev_dir'], 'analysis_report.json')
+            with open(report_path, 'w') as f:
+                json.dump(result.model_dump(), f, indent=2, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to write revision analysis report: {e}")
+
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Analyze latest revision failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Analyze latest revision failed: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(

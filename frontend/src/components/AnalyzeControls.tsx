@@ -2,7 +2,7 @@ import React from 'react'
 import { useData } from '../context/DataProvider'
 
 const AnalyzeControls: React.FC = () => {
-  const { loadingState, analysisResult, isUsingCache, handleAnalyze, handleResolve, downloadLinks, reviewStatus, reviewVotes, reviewFeedback, error } = useData()
+  const { loadingState, analysisResult, isUsingCache, handleAnalyze, handleAnalyzeRevised, handleResolve, downloadLinks, reviewStatus, reviewVotes, reviewFeedback, error } = useData()
 
   return (
     <div className="analyze-section">
@@ -13,6 +13,14 @@ const AnalyzeControls: React.FC = () => {
           disabled={loadingState === 'loading'}
         >
           {loadingState === 'loading' ? 'Analyzing...' : 'Analyze'}
+        </button>
+        <button
+          className="analyze-button"
+          onClick={() => handleAnalyzeRevised()}
+          disabled={loadingState === 'loading'}
+          title="Analyze latest revised datasets saved under Revisions"
+        >
+          {loadingState === 'loading' ? 'Analyzing...' : 'Analyze Latest Revision'}
         </button>
         {analysisResult && (
           <button 

@@ -8,6 +8,7 @@ interface DataContextType {
   error: string
   isUsingCache: boolean
   handleAnalyze: (forceRefresh?: boolean) => Promise<void>
+  handleAnalyzeRevised: () => Promise<void>
   handleResolve: () => Promise<void>
   downloadLinks: { nbim: string; custody: string } | null
   reviewStatus: 'idle' | 'approved' | 'needs_revision'
@@ -229,6 +230,48 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
     }
   }
 
+  const handleAnalyzeRevised = async () => {
+    setLoadingState('loading')
+    setError('')
+    setIsUsingCache(false)
+    try {
+      const response = await fetch('http://localhost:8000/api/analyze-latest-revision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('No revisions found. Run Resolve to create a revision first.')
+        } else if (response.status >= 500) {
+          throw new Error('Server error occurred. Please try again later.')
+        } else {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+      }
+
+      const result: ConsolidatedAnalysisResult = await response.json()
+      const transformedResult: ConsolidatedAnalysisResult = {
+        ...result,
+        row_analyses: result.row_analyses.map((row) => ({
+          ...row,
+          recommended_actions: row.recommended_actions.map((action, actionIndex) => ({
+            ...action,
+            id: action.id || `${row.row_id}-action-${actionIndex}`,
+            completed: action.completed || false,
+          })),
+        })),
+      }
+
+      setAnalysisResult(transformedResult)
+      setLoadingState('success')
+    } catch (err) {
+      console.error('Revised analysis failed:', err)
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred')
+      setLoadingState('error')
+    }
+  }
+
   const handleResolve = async () => {
     setLoadingState('loading')
     setError('')
@@ -278,6 +321,7 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
     error,
     isUsingCache,
     handleAnalyze,
+    handleAnalyzeRevised,
     handleResolve,
     downloadLinks,
     reviewStatus,
